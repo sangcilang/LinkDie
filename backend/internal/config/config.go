@@ -222,7 +222,7 @@ func splitCSV(s string) []string {
 	parts := strings.Split(s, ",")
 	result := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {-
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
 			result = append(result, trimmed)
 		}
 	}
