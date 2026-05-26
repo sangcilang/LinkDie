@@ -1,0 +1,145 @@
+version: '3.9'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis — token storage, distributed lock, rate limiting
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # ClamAV — malware scanning
+  # ---------------------------------------------------------------------------
+  clamav:
+    image: clamav/clamav:1.3
+    restart: unless-stopped
+    environment:
+      - CLAMAV_NO_FRESHCLAMD=false
+    volumes:
+      - clamav_data:/var/lib/clamav
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+
+  # ---------------------------------------------------------------------------
+  # Backend — Go Fiber API server + cleanup worker
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_ADDR=redis:6379
+      - CLAMAV_ADDRESS=clamav:3310
+    depends_on:
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js 14 App Router (standalone output)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - BACKEND_INTERNAL_URL=http://backend:8080
+      - NODE_ENV=production
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # SSL cert generator — runs once to create self-signed cert for local dev
+  # ---------------------------------------------------------------------------
+  ssl-init:
+    image: alpine/openssl:latest
+    volumes:
+      - ssl_certs:/ssl
+    entrypoint: >
+      sh -c "if [ ! -f /ssl/cert.pem ]; then
+        echo 'Generating self-signed SSL certificate...' &&
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+          -keyout /ssl/key.pem
+          -out /ssl/cert.pem
+          -subj '/CN=localhost' &&
+        echo 'Certificate generated.';
+      else
+        echo 'Certificate already exists.';
+      fi"
+    networks: []
+
+  # ---------------------------------------------------------------------------
+  # Nginx — reverse proxy, TLS termination, rate limiting
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ssl_certs:/etc/nginx/ssl:ro
+    depends_on:
+      ssl-init:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - internal
+      - external
+
+volumes:
+  redis_data:
+  clamav_data:
+  ssl_certs:
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+  external:
+    driver: bridge

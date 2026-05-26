@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    {
+      "ID": "ephemeral-share-safety-net-deletion",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "ep/"
+      },
+      "Expiration": {
+        "Days": 8
+      }
+    }
+  ]
+}
